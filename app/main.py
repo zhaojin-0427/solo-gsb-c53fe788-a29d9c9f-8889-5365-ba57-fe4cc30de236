@@ -13,12 +13,16 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import database as db
+from . import verification as vfy
 from .analysis import build_analysis, revalidate_adoptions
 from .gaps import DECISIONS, compute_shot_gaps
 from .shots import Shot, parse_shots
 from .subtitles import ParsedCue, parse_subtitle, visible_text
 
 app = FastAPI(title="字幕节奏与镜头边界校正台", version="1.0")
+
+# 交付字幕核验：保序对应 O(n·m)，两侧条目数上限
+VERIFY_MAX_CUES = 3000
 
 
 @app.on_event("startup")
@@ -509,6 +513,50 @@ def export(pid: int, fmt: str = "json"):
         media_type="application/zip",
         headers={"Content-Disposition":
                  "attachment; filename=correction.zip"})
+
+
+# ---------- 交付字幕核验 ----------
+
+@app.post("/api/projects/{pid}/verify-delivery")
+async def verify_delivery(pid: int, delivery: UploadFile = File(...)):
+    """上传回传的交付稿（SRT / WebVTT），与项目当前生效时间轴对照核验。
+
+    只读操作：复用 parse_subtitle 解析回传稿，生效时间轴与 SRT 导出共用
+    同一规则（已采纳 → 提案 → 原值）；保序最优对应、等优歧义待确认的全部
+    规则见 app.verification。不改动采纳、留白结论与任何导出。空稿或解析
+    失败返回 400，核验不落库。
+    """
+    sub_bytes = await delivery.read()
+    try:
+        parsed = parse_subtitle(sub_bytes, delivery.filename or "")
+    except Exception as exc:
+        raise HTTPException(400, f"交付字幕解析失败：{exc}")
+    if not parsed:
+        raise HTTPException(400, "交付字幕文件中未解析出任何条目")
+
+    with db.get_conn() as conn:
+        data = _recompute(conn, pid)
+    refs = [
+        vfy.TimelineLine(
+            ord=c["ord"], cue_id=c["cue_id"], text=c["text"],
+            start_ms=s, end_ms=e,
+        ) for c in data["analysis"]["cues"]
+        for s, e in [_effective_times(c)]
+    ]
+    # 保序对应为 O(生效条目 × 交付条目)：限制两侧规模避免误传超大稿导致
+    # 请求长时间占用；真实交付稿（千条以内）均在秒级完成。
+    if len(parsed) > VERIFY_MAX_CUES or len(refs) > VERIFY_MAX_CUES:
+        raise HTTPException(
+            400, f"核验条目数过多（>{VERIFY_MAX_CUES}），请拆分为更小的稿件")
+    delivered = [
+        vfy.TimelineLine(
+            ord=i, cue_id=None, text=visible_text(c.raw_text),
+            start_ms=c.start_ms, end_ms=c.end_ms,
+        ) for i, c in enumerate(parsed, start=1)
+    ]
+    return {"project_id": data["id"], "project_name": data["name"],
+            "delivery_name": delivery.filename or "",
+            **vfy.verify_delivery(refs, delivered)}
 
 
 # ---------- 静态前端 ----------

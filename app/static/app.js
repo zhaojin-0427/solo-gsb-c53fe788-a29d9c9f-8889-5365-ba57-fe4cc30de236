@@ -6,6 +6,15 @@ const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 
 const state = {
   project: null,
+  deliveryVerify: null,
+};
+
+const VERIFY_LABEL = {
+  pass: "通过",
+  time_mismatch: "时间不符",
+  missing: "缺失",
+  new: "新增",
+  pending: "待确认",
 };
 
 // ---------- 工具 ----------
@@ -117,11 +126,85 @@ function renderGapReview(p) {
   }
 }
 
+// ---------- 交付字幕核验 ----------
+function renderDeliveryVerify() {
+  const v = state.deliveryVerify;
+  const tb = $("#verifyTable tbody");
+  const stats = $("#verifyStats");
+  tb.innerHTML = "";
+  if (!v) {
+    stats.innerHTML = "";
+    $("#deliveryName").textContent = "";
+    return;
+  }
+  $("#deliveryName").textContent =
+    `已核验：${v.delivery_name || "交付稿"}（生效轴 ${v.reference_count} 条 / 交付 ${v.delivered_count} 条 / 同文案配对 ${v.matched_text_count} 对）`;
+  const s = v.summary;
+  stats.innerHTML = [
+    ["通过", s.pass, "good"],
+    ["时间不符", s.time_mismatch, s.time_mismatch ? "bad" : "good"],
+    ["缺失", s.missing, s.missing ? "bad" : "good"],
+    ["新增", s.new, s.new ? "warn" : ""],
+    ["待确认", s.pending, s.pending ? "warn" : "good"],
+  ].map(([k, n, cls]) => `<span class="stat ${cls}">${k} <b>${n}</b></span>`).join("");
+
+  const cell = (ord, start, end, cls = "") => ord == null
+    ? `<td class="muted">—</td>`
+    : `<td class="${cls}">#${ord}<span class="muted">${start} → ${end} ms</span></td>`;
+
+  for (const r of v.rows) {
+    const tr = document.createElement("tr");
+    tr.className = `verify-row verdict-${r.verdict}`;
+    const pill = `<span class="pill vf-${r.verdict}">${VERIFY_LABEL[r.verdict]}</span>`;
+    let body;
+    if (r.kind === "match") {
+      const dCls = r.verdict === "time_mismatch" || r.verdict === "pending"
+        ? "vf-time" : "";
+      const dTxt = (n) => (n > 0 ? "+" : "") + n;
+      const deltaCls = r.delta_start_ms === 0 && r.delta_end_ms === 0
+        ? "delta-zero" : "vf-time";
+      const textFlag = r.text_same ? ""
+        : `<div class="hash warn-text">⚠ 等优对应中文案不同，请人工核对</div>`;
+      body = `
+        <td>${pill}</td>
+        ${cell(r.ref_ord, r.ref_start_ms, r.ref_end_ms)}
+        ${cell(r.del_ord, r.del_start_ms, r.del_end_ms, dCls)}
+        <td class="${deltaCls}">${dTxt(r.delta_start_ms)} / ${dTxt(r.delta_end_ms)}</td>
+        <td class="text-cell">${esc(r.text)}${textFlag}</td>`;
+    } else if (r.kind === "ref_only") {
+      const cand = r.candidate
+        ? `<div class="hash">等优候选：交付 #${cand.del_ord}
+             ${cand.del_start_ms} → ${cand.del_end_ms} ms「${esc(cand.delivered_text)}」</div>`
+        : "";
+      body = `
+        <td>${pill}</td>
+        ${cell(r.ref_ord, r.ref_start_ms, r.ref_end_ms)}
+        <td class="muted">—</td>
+        <td class="muted">—</td>
+        <td class="text-cell">${esc(r.text)}${cand}</td>`;
+    } else {
+      const cand = r.candidate
+        ? `<div class="hash">等优候选：生效轴 #${cand.ref_ord}
+             ${cand.ref_start_ms} → ${cand.ref_end_ms} ms「${esc(cand.text)}」</div>`
+        : "";
+      body = `
+        <td>${pill}</td>
+        <td class="muted">—</td>
+        ${cell(r.del_ord, r.del_start_ms, r.del_end_ms)}
+        <td class="muted">—</td>
+        <td class="text-cell">${esc(r.delivered_text)}${cand}</td>`;
+    }
+    tr.innerHTML = body;
+    tb.appendChild(tr);
+  }
+}
+
 function render() {
   const p = state.project;
   if (!p) {
     $("#workspace").classList.add("hidden");
     $("#importPanel").classList.remove("hidden");
+    renderDeliveryVerify();
     return;
   }
   $("#importPanel").classList.add("hidden");
@@ -215,6 +298,7 @@ function render() {
   $("#exportSrt").href = base + "?fmt=srt";
   $("#projectSelect").value = String(p.id);
   renderGapReview(p);
+  renderDeliveryVerify();
 }
 
 // 采纳可能因另一标签页并发改参数而被拒（旧提案失效）：重新拉取详情，
@@ -240,6 +324,7 @@ $("#importForm").addEventListener("submit", async (ev) => {
   if (f.shots_file.files[0]) fd.append("shots_file", f.shots_file.files[0]);
   try {
     state.project = await api("/api/projects", { method: "POST", body: fd });
+    state.deliveryVerify = null;
     toast("导入并分析完成");
     await loadProjects();
     render();
@@ -355,11 +440,32 @@ $("#gapList").addEventListener("click", async (ev) => {
   }
 });
 
+// 交付字幕核验：上传回传稿，服务端保序最优对应后返回逐行结论。
+// 只读核验，失败（空稿/解析失败）仅弹错，不影响当前项目数据。
+$("#deliveryVerifyForm").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  if (!state.project) return;
+  const f = ev.target;
+  if (!f.delivery.files[0]) return;
+  const fd = new FormData();
+  fd.append("delivery", f.delivery.files[0]);
+  try {
+    state.deliveryVerify = await api(
+      `/api/projects/${state.project.id}/verify-delivery`,
+      { method: "POST", body: fd });
+    renderDeliveryVerify();
+    const s = state.deliveryVerify.summary;
+    toast(`核验完成：通过 ${s.pass} · 时间不符 ${s.time_mismatch} · ` +
+          `缺失 ${s.missing} · 新增 ${s.new} · 待确认 ${s.pending}`);
+  } catch (e) { toast(e.message, true); }
+});
+
 $("#deleteProjectBtn").addEventListener("click", async () => {  if (!state.project) return;
   if (!confirm(`确定删除项目「${state.project.name}」？该操作不可恢复。`)) return;
   try {
     await api(`/api/projects/${state.project.id}`, { method: "DELETE" });
     state.project = null;
+    state.deliveryVerify = null;
     toast("项目已删除");
     await loadProjects();
     render();
@@ -371,12 +477,14 @@ $("#projectSelect").addEventListener("change", async (ev) => {
   if (!id) return;
   try {
     state.project = await api(`/api/projects/${id}`);
+    state.deliveryVerify = null;
     render();
   } catch (e) { toast(e.message, true); }
 });
 
 $("#newProjectBtn").addEventListener("click", () => {
   state.project = null;
+  state.deliveryVerify = null;
   $("#projectSelect").value = "";
   render();
 });

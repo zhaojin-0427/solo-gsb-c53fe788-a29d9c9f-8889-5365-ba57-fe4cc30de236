@@ -99,6 +99,34 @@
       <div id="gapStats" class="stats"></div>
       <div id="gapList"></div>
     </section>
+
+    <!-- 交付字幕核验 -->
+    <section id="deliveryVerifyPanel" class="gap-review">
+      <h3>交付字幕核验</h3>
+      <p class="hint">上传合作方回传的 SRT / WebVTT：服务端按项目当前生效时间轴
+        （已采纳 → 提案 → 原值）逐条对照。交付稿允许重编号、插删行、重复文案，
+        按「保持顺序、同文案匹配最多、时间偏差之和最小」配对；存在等优配对且会
+        改变某行结论时，相关行列为<strong>待确认</strong>，不自动判缺失/时间不符。
+        核验结果不落库，不影响采纳、留白结论与 JSON/SRT/ZIP 导出。</p>
+      <form id="deliveryVerifyForm" class="delivery-form">
+        <input name="delivery" type="file" accept=".srt,.vtt,text/vtt" required>
+        <button type="submit" class="primary">上传并核验</button>
+        <span id="deliveryName" class="muted"></span>
+      </form>
+      <div id="verifyStats" class="stats"></div>
+      <div class="table-wrap">
+        <table id="verifyTable">
+          <thead>
+            <tr>
+              <th>结论</th><th>生效轴 #</th><th>生效轴时间（ms）</th>
+              <th>交付稿 #</th><th>交付稿时间（ms）</th><th>Δ 起 / Δ 止</th>
+              <th>文案</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
   </section>
 </main>
 

@@ -139,3 +139,18 @@ tr.row-proposed td { }
 .gap-time .muted { color: var(--muted); margin-left: 8px; }
 .pill.intentional { background: rgba(62,207,142,.15); color: var(--good); }
 .pill.needs-sub { background: rgba(242,180,65,.14); color: var(--warn); }
+
+/* 交付字幕核验 */
+.delivery-form { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 10px 0; }
+.delivery-form .muted { font-size: 12px; }
+.verify-row td span.muted { display: block; margin-top: 2px; }
+.pill.vf-pass { background: rgba(62,207,142,.15); color: var(--good); }
+.pill.vf-time_mismatch { background: rgba(240,98,107,.14); color: var(--bad); }
+.pill.vf-missing { background: rgba(240,98,107,.14); color: var(--bad); }
+.pill.vf-new { background: rgba(78,161,255,.14); color: var(--accent); }
+.pill.vf-pending { background: rgba(242,180,65,.14); color: var(--warn); }
+.vf-time { color: var(--warn); font-weight: 600; }
+.verify-row.verdict-missing { background: rgba(240, 98, 107, .06); }
+.verify-row.verdict-pending { background: rgba(242, 180, 65, .07); }
+.warn-text { color: var(--warn); }
+
