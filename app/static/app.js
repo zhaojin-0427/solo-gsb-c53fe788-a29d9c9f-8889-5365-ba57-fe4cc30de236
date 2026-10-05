@@ -6,6 +6,7 @@ const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 
 const state = {
   project: null,
+  delivery: null,   // {pid, result} 交付核验结果；项目刷新/变更即失效
 };
 
 // ---------- 工具 ----------
@@ -66,6 +67,80 @@ async function loadProjects(selectId) {
 // ---------- 渲染 ----------
 const DECISION_LABEL = { intentional: "有意留白", needs_subtitle: "待补字幕" };
 
+// ---------- 交付字幕核验 ----------
+const DCONCL_LABEL = {
+  pass: "通过", time_mismatch: "时间不符", missing: "缺失",
+  added: "新增", pending: "待确认",
+};
+const DCONCL_CLS = {
+  pass: "dc-pass", time_mismatch: "dc-mismatch", missing: "dc-missing",
+  added: "dc-added", pending: "dc-pending",
+};
+
+function dcPill(concl) {
+  return `<span class="pill ${DCONCL_CLS[concl]}">${DCONCL_LABEL[concl]}</span>`;
+}
+
+function dcCandidates(cands, fmtOrd) {
+  if (!cands.length) return "—";
+  const shown = cands.map(c =>
+    `<span class="dc-cand">${fmtOrd(c)} ${c.start_ms}→${c.end_ms}</span>`);
+  return shown.join("");
+}
+
+function renderDelivery() {
+  const stats = $("#deliveryStats");
+  const box = $("#deliveryResult");
+  const d = state.delivery;
+  if (!state.project || !d || d.pid !== state.project.id) {
+    stats.innerHTML = "";
+    box.innerHTML = "";
+    return;
+  }
+  const r = d.result;
+  const s = r.summary;
+  stats.innerHTML = [
+    ["项目条目", s.project_total, ""],
+    ["交付条目", s.delivery_total, ""],
+    ["通过", s.pass, s.pass ? "good" : ""],
+    ["时间不符", s.time_mismatch, s.time_mismatch ? "bad" : "good"],
+    ["缺失", s.missing, s.missing ? "bad" : "good"],
+    ["新增", s.added, s.added ? "warn" : "good"],
+    ["待确认", s.pending, s.pending ? "warn" : "good"],
+  ].map(([k, v, cls]) => `<span class="stat ${cls}">${k} <b>${v}</b></span>`).join("");
+
+  const projRows = r.project_items.map(it => `
+    <tr class="${it.conclusion === "pass" ? "" : "dc-row-attn"}">
+      <td>${it.ord}</td>
+      <td>${esc(it.cue_id)}</td>
+      <td class="text-cell">${esc(it.text)}</td>
+      <td>${it.start_ms} → ${it.end_ms}</td>
+      <td>${dcPill(it.conclusion)}</td>
+      <td class="dc-cands">${dcCandidates(it.candidates, c => `交付#${c.ord}`)}</td>
+    </tr>`).join("");
+  const delRows = r.delivery_items.map(it => `
+    <tr class="${it.conclusion === "pass" ? "" : "dc-row-attn"}">
+      <td>${it.ord}</td>
+      <td class="text-cell">${esc(it.text)}</td>
+      <td>${it.start_ms} → ${it.end_ms}</td>
+      <td>${dcPill(it.conclusion)}</td>
+      <td class="dc-cands">${dcCandidates(it.candidates, c => `项目#${c.ord}`)}</td>
+    </tr>`).join("");
+  box.innerHTML = `
+    <h4>项目侧逐条结论（生效时间轴）</h4>
+    <div class="table-wrap"><table class="dc-table">
+      <thead><tr><th>#</th><th>cue_id</th><th>文案</th><th>生效起→止 (ms)</th>
+        <th>结论</th><th>候选对应（交付行 起→止）</th></tr></thead>
+      <tbody>${projRows}</tbody>
+    </table></div>
+    <h4>交付侧逐条结论（${esc(r.file_name)}）</h4>
+    <div class="table-wrap"><table class="dc-table">
+      <thead><tr><th>#</th><th>文案</th><th>起→止 (ms)</th>
+        <th>结论</th><th>候选对应（项目行 起→止）</th></tr></thead>
+      <tbody>${delRows}</tbody>
+    </table></div>`;
+}
+
 function renderGapReview(p) {
   const panel = $("#gapReviewPanel");
   const gr = p.gap_review;
@@ -119,6 +194,11 @@ function renderGapReview(p) {
 
 function render() {
   const p = state.project;
+  // 项目刷新/变更（导入、采纳、改参数、切换项目）都会使旧核验结果过期：
+  // render 是这些路径的统一出口，而核验成功回调不经过 render，
+  // 因此在这里清空并依据 state.delivery 重绘核验区即可。
+  state.delivery = null;
+  renderDelivery();
   if (!p) {
     $("#workspace").classList.add("hidden");
     $("#importPanel").classList.remove("hidden");
@@ -353,6 +433,26 @@ $("#gapList").addEventListener("click", async (ev) => {
     toast(e.message + "（留白已随参数/采纳变化，已刷新）", true);
     refreshAfterConflict(pid);
   }
+});
+
+// 交付字幕核验：上传回传字幕，与当前生效时间轴对照。只读操作；
+// 结果不随项目持久化，任何项目变更（render）后自动清空。
+$("#deliveryForm").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  if (!state.project) return;
+  const f = ev.target;
+  const file = f.delivery_file.files[0];
+  if (!file) return toast("请选择回传的 SRT / WebVTT 文件", true);
+  const fd = new FormData();
+  fd.append("delivery_file", file);
+  try {
+    const result = await api(`/api/projects/${state.project.id}/delivery-check`,
+                             { method: "POST", body: fd });
+    state.delivery = { pid: state.project.id, result };
+    const s = result.summary;
+    toast(`核验完成：通过 ${s.pass}、时间不符 ${s.time_mismatch}、缺失 ${s.missing}、新增 ${s.added}、待确认 ${s.pending}`);
+    renderDelivery();
+  } catch (e) { toast(e.message, true); }
 });
 
 $("#deleteProjectBtn").addEventListener("click", async () => {  if (!state.project) return;

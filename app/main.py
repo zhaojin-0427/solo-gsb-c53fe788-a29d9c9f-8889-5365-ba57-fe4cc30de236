@@ -1,4 +1,4 @@
-"""FastAPI 入口：项目导入、分析、采纳、镜头留白审阅、导出。"""
+"""FastAPI 入口：项目导入、分析、采纳、镜头留白审阅、交付字幕核验、导出。"""
 from __future__ import annotations
 
 import hashlib
@@ -14,6 +14,7 @@ from pydantic import BaseModel
 
 from . import database as db
 from .analysis import build_analysis, revalidate_adoptions
+from .delivery import CheckLine, verify_delivery
 from .gaps import DECISIONS, compute_shot_gaps
 from .shots import Shot, parse_shots
 from .subtitles import ParsedCue, parse_subtitle, visible_text
@@ -396,6 +397,66 @@ def clear_gap_review(pid: int, shot_ord: int,
                 400, "该留白区间已随参数或采纳状态变化，请刷新后重试")
         db.delete_gap_review(conn, pid, shot_ord, gap_start_ms, gap_end_ms)
         return _recompute(conn, pid)
+
+
+# ---------- 交付字幕核验 ----------
+
+@app.post("/api/projects/{pid}/delivery-check")
+async def delivery_check(pid: int, delivery_file: UploadFile = File(...)):
+    """交付字幕核验：上传回传的 SRT/WebVTT，与项目当前生效时间轴
+    （已采纳 → 提案 → 原值，与 SRT 导出同一条）逐条对照。只读操作：
+    不更改采纳、留白结论与 JSON/SRT/ZIP 导出，结果不落库。"""
+    raw = await delivery_file.read()
+    try:
+        parsed = parse_subtitle(raw, delivery_file.filename or "")
+    except Exception as exc:
+        raise HTTPException(400, f"交付字幕解析失败：{exc}")
+    if not parsed:
+        raise HTTPException(400, "交付字幕文件中未解析出任何条目")
+    # 只读事务的一致快照内重算生效时间轴（与导出 SRT 完全同源）
+    with db.get_conn() as conn:
+        data = _recompute(conn, pid)
+    proj_cues = data["analysis"]["cues"]
+    project_lines = []
+    for c in proj_cues:
+        s, e = _effective_times(c)
+        project_lines.append(CheckLine(text=c["text"], start_ms=s, end_ms=e))
+    delivery_lines = [
+        CheckLine(text=visible_text(p.raw_text),
+                  start_ms=p.start_ms, end_ms=p.end_ms)
+        for p in parsed
+    ]
+    try:
+        result = verify_delivery(project_lines, delivery_lines)
+    except ValueError as exc:
+        raise HTTPException(400, f"交付字幕核验失败：{exc}")
+
+    def proj_ref(i: int) -> dict:
+        c = proj_cues[i]
+        s, e = _effective_times(c)
+        return {"ord": c["ord"], "cue_id": c["cue_id"],
+                "start_ms": s, "end_ms": e}
+
+    def del_ref(j: int) -> dict:
+        p = parsed[j]
+        return {"ord": p.ord, "start_ms": p.start_ms, "end_ms": p.end_ms}
+
+    return {
+        "file_name": delivery_file.filename or "",
+        "summary": result["summary"],
+        "project_items": [{
+            **proj_ref(it["index"]),
+            "text": proj_cues[it["index"]]["text"],
+            "conclusion": it["conclusion"],
+            "candidates": [del_ref(j) for j in it["candidates"]],
+        } for it in result["project_items"]],
+        "delivery_items": [{
+            **del_ref(it["index"]),
+            "text": delivery_lines[it["index"]].text,
+            "conclusion": it["conclusion"],
+            "candidates": [proj_ref(i) for i in it["candidates"]],
+        } for it in result["delivery_items"]],
+    }
 
 
 # ---------- 导出 ----------

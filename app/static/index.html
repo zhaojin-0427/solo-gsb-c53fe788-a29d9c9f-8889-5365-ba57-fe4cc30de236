@@ -99,6 +99,21 @@
       <div id="gapStats" class="stats"></div>
       <div id="gapList"></div>
     </section>
+
+    <!-- 交付字幕核验 -->
+    <section id="deliveryPanel" class="delivery-check">
+      <h3>交付字幕核验</h3>
+      <p class="hint">上传回传的 SRT / WebVTT，与当前生效时间轴（已采纳 → 提案 → 原值）逐条对照：
+        不按编号/行号配对，对应保持顺序，先使同文案匹配数最多、再使起止偏差之和最小；
+        等优对应会改变结论的行记「待确认」。核验为只读，不影响采纳、留白结论与导出；
+        采纳或改参数后请重新核验。</p>
+      <form id="deliveryForm" class="delivery-form">
+        <input name="delivery_file" type="file" accept=".srt,.vtt,text/vtt" required>
+        <button type="submit" class="primary">开始核验</button>
+      </form>
+      <div id="deliveryStats" class="stats"></div>
+      <div id="deliveryResult"></div>
+    </section>
   </section>
 </main>
 
